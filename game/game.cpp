@@ -3,6 +3,8 @@
 
 #include "framework.h"
 #include "game.h"
+#include <iostream>
+#include <string>
 #include <vector>
 
 #define MAX_LOADSTRING 100
@@ -131,14 +133,18 @@ RECT g_parrying;                        //패링 영역
 struct bullet                         //총알 구조체
 {
     RECT rc;                            // 총알의 위치와 크기(Rect)
-    int  speedY;                        // 상하 속도
+    int speedX;                         // 좌우 속도
+    int speedY;                        // 상하 속도
     bool active;                        // 사용 중인지 여부
 };
 std::vector<bullet> g_bullets;        // bullet들을 담을 동적 전역 배열
 int my_x  = 275;                        // g_me의 x좌표 초기값 
-int my_y = 500;                         // g_me의 y좌표 초기값 상하 이동은 구현 안하기 떄문에 바뀔 일이 없다
-int g_speed = 0;                        // 내 캐릭터의 이동속도
+int my_y = 500;                         // g_me의 y좌표 초기값 상하 이동은 구현 안했기 때문에 바뀔 일은 없을듯하네요
 int g_parry_timer = 0;                  // 패링의 남은 지속 프레임을 담을 변수
+int g_parryCoolTime = 0;                // 패링의 남은 쿨타임을 담을 변수
+int g_parryCool = 30;                   // 패링의 쿨타임
+int g_enemyLife = 10;                  // 적 체력
+int g_myLife = 5;                      // 내 체력
 bool g_parry = 0;                       // 패링 on off 플래그 변수 이게 TRUE일때만 g_bullets.b와 g_parrying의 겹침 여부를 계산 
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
@@ -176,20 +182,15 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         {
             switch (wParam)
             {
-                case VK_LEFT: // 왼쪽 이동
-                {
-                    g_speed = -5;
-                    break;
-                }
-                case VK_RIGHT: // 오른쪽 이동
-                {
-                    g_speed = +5;
-                    break;
-                }
                 case VK_SPACE: // 패링
                 {
-                    g_parry = TRUE;
-                    g_parry_timer = 5; // 5프레임(?)동안 패링 유지
+                    if (g_parryCoolTime == 0) // 패링 남은 풀타임이 0일시에만 패링 발동
+                    {
+                        g_parry = TRUE;
+                        g_parry_timer = 3; // 3프레임동안 패링 유지
+
+                        g_parryCoolTime = g_parryCool;  // 패링 쿨타임 시작
+                    }
                     break;
                 }
 
@@ -209,11 +210,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         }
             break;
 
-    case WM_KEYUP:
-        if (wParam == VK_LEFT || wParam == VK_RIGHT)
-            g_speed = 0;   // 방향키 떼면 정지하도록
-        break;
-
     case WM_COMMAND:
         {
             int wmId = LOWORD(wParam);
@@ -232,18 +228,33 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         }
         break;
     case WM_TIMER:
-    {   
-        if (wParam == TIMER_UPDATE) // 화면 다시 그리기 타이머
+    {
+        if (wParam == TIMER_UPDATE) // 전체적인 타이머
         {
-            my_x += g_speed;    // g_me의 좌표를 변경
+            SHORT left = GetAsyncKeyState(VK_LEFT);
+            SHORT right = GetAsyncKeyState(VK_RIGHT);
+
+            int move = 0;
+
+            if (left & 0x8000)  move -= 1;
+            if (right & 0x8000) move += 1;
+
+            my_x += move * 7;    // g_me의 좌표를 변경
+
+
 
             if (g_parry_timer > 0)
             {
-                g_parry_timer--; // 패링 남은 프레임을프레임마다 감소
+                g_parry_timer--; // 패링 남은 프레임을프레임마다 
             }
             else
             {
                 g_parry = false; // g_parry_timer가 0이 되면 g_parry false로 변경(총알과 패링 영역의 충돌 계산 안하도록)
+            }
+
+            if (g_parryCoolTime > 0)
+            {
+                g_parryCoolTime--;  // 패링 쿨타임 감소
             }
 
             //me 위치 갱신
@@ -258,15 +269,17 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             g_parrying.right = g_me.right + 10;
             g_parrying.bottom = g_me.top;
 
-            // g_bullets 위치 갱신
+            // 총알 위치 갱신
             for (auto& b : g_bullets)
             {
                 if (!b.active) continue;
+                b.rc.left += b.speedX;
+                b.rc.right += b.speedX;
+
                 b.rc.top += b.speedY;
                 b.rc.bottom += b.speedY;
 
-                // 화면 아래 나가면 비활성화
-                if (b.rc.top > 1200)                //1200은 임시적인 값입니다.
+                if (b.rc.top > 800 || b.rc.bottom < 0 || b.rc.right < 0 || b.rc.left > 2000)                // 총알 화면 밖으로 나가면 비활성화 800, 2000은 일단 넣어둔 값
                     b.active = false;
             }
 
@@ -280,32 +293,101 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                     RECT check;
                     if (IntersectRect(&check, &g_parrying, &b.rc))
                     {
-                        // 패링 성공 → 총알 튕기기
+                        // 패링 성공 → 총알 
                         b.speedY = -8;
+                        if (move < 0)
+                        {
+                            b.speedX = -2;
+                        }
+                        else if (move > 0)
+                        {
+                            b.speedX = 2;
+                        }
                     }
                 }
             }
 
+            // 총알 피격
+            for (auto& b : g_bullets)
+            {
+                if (!b.active) continue;
+
+                RECT hit;
+                if (IntersectRect(&hit, &g_me, &b.rc))
+                {
+                    g_myLife--;
+                    b.active = false;              // 총알 비활성화(삭제 처리)
+                }
+            }
+
+            // 총알 적이 맞음
+            for (auto& b : g_bullets)
+            {
+                if (!b.active) continue;
+
+                RECT hit;
+                if (IntersectRect(&hit, &g_enemy, &b.rc))
+                {
+                    g_enemyLife--;
+                    b.active = false;              // 총알 비활성화(삭제 처리)
+                }
+            }
+
+            //체력 0 되면 게임 종료
+            if (g_myLife == 0)
+            {
+                KillTimer(hWnd, TIMER_UPDATE);
+                KillTimer(hWnd, TIMER_SHOOT);
+
+                MessageBox(hWnd, L"게임 종료!", L"Game Over", MB_OK);
+                DestroyWindow(hWnd);
+            }
+
+            //비활성화 된 총알 메모리에서 삭제
+            g_bullets.erase(
+                std::remove_if(g_bullets.begin(), g_bullets.end(),
+                    [](const bullet& b) { return !b.active; }),
+                g_bullets.end()
+            );
+
             InvalidateRect(hWnd, NULL, TRUE); // 위 갱신된 rect들을 전부 다시 그림
         }
-        
 
         if (wParam == TIMER_SHOOT) // 적 총알 발사 타이머
         {
-            bullet b;                         //
-
-            // 총알 시작 위치 = 적의 중앙
             int enemyCenterX = (g_enemy.left + g_enemy.right) / 2;
 
-            b.rc = { enemyCenterX - 5, g_enemy.bottom, enemyCenterX + 5, g_enemy.bottom + 10 };
-            b.speedY = 5;     // 총알의 아래로 이동하는 속도
-            b.active = true;
+            for (int i = -3; i <= 3; i+=2)   // -3 ~ +3 총 7개의 총알 생성
+            {
+                bullet b;
 
-            g_bullets.push_back(b);
+                // 총알 위치 (적 아래에서 생성)
+                b.rc = { enemyCenterX - 5, g_enemy.bottom,
+                         enemyCenterX + 5, g_enemy.bottom + 10 };
+
+                b.speedX = i;               // 
+                b.speedY = 5;               // 아래로 이동
+
+                b.active = true;
+                g_bullets.push_back(b);
+            }
         }
-    }
-    break;
 
+        //if (wParam == TIMER_SHOOT) // 적 총알 발사 타이머
+        //{
+        //    bullet b;                         //
+
+        //    // 총알 시작 위치 = 적의 중앙
+        //    int enemyCenterX = (g_enemy.left + g_enemy.right) / 2;
+
+        //    b.rc = { enemyCenterX - 5, g_enemy.bottom, enemyCenterX + 5, g_enemy.bottom + 10 };
+        //    b.speedY = 5;     // 총알의 아래로 이동하는 속도
+        //    b.active = true;
+
+        //    g_bullets.push_back(b);
+        //}
+    }
+        break;
     case WM_PAINT:
         {
             PAINTSTRUCT ps;
@@ -321,6 +403,28 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             if (g_parry) {
                 Rectangle(hdc, g_parrying.left, g_parrying.top, g_parrying.right, g_parrying.bottom);
             }
+
+            /// 내 체력 표시
+
+            wchar_t buffer[32];                             
+            swprintf(buffer, 32, L"HP: %d", g_myLife);
+
+            TextOutW(hdc, 10, 500, buffer, lstrlenW(buffer));
+
+            /// 적 체력 표시
+            wchar_t enemyBuffer[32];
+            swprintf(enemyBuffer, 32, L"HP: %d", g_enemyLife);
+
+            TextOutW(hdc, 10, 0, enemyBuffer, lstrlenW(enemyBuffer));
+
+            /// 총알 생성 및 삭제 확인용 코드
+            /*int activeCount = 0;
+            for (auto& b : g_bullets)
+                if (b.active) activeCount++;
+
+            std::wstring text = L"Active Bullets: " + std::to_wstring(g_bullets.size());
+            TextOut(hdc, 10, 10, text.c_str(), text.length());*/
+
             EndPaint(hWnd, &ps);
         }
         break;
@@ -354,10 +458,9 @@ INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 }
 
 /// 해야할 것들
-/// 1.나와 적의 총알과의 겹침 계산 후 체력 감소
-/// 2.적과 튕겨낸 총알과의 겹침 계산 후 적 체력 감소
-/// 3.패링하지 못 해서 흘러 내린 총알 삭제
+/// 0.총알 패턴 여러가지로 구현
 /// 4.적 공격 패턴 다양화
 /// 5.적 스킬 만들기(슬로우 장판, 이동방해 벽 등등)
 /// 6.나에게 도움이 되는 아이템 만들기(체력 회복, 공격력 증가, 이동속도 증가, 패링 판정 강화)
-/// 7.
+/// 7.유도탄 구현 ( g_me의 x값과 가까워지려는 이동만 추가하면 될 듯, 색깔이 다른 총알로 구현)
+/// 8.
