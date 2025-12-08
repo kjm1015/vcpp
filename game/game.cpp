@@ -19,12 +19,15 @@ const UINT_PTR TIMER_SHOOT = 2;                 // 총알 발사 타이머
 RECT g_enemy;                                   //적
 RECT g_me;                                      //나
 RECT g_parrying;                                //패링 영역
+RECT g_slowZone;                                //슬로우 장판
+RECT g_Wall;                                    // 적 스킬 벽
 struct bullet                                   //총알 구조체
 {
     RECT rc;                                    // 총알의 위치와 크기(Rect)
     int speedX;                                 // 좌우 속도
     int speedY;                                 // 상하 속도
     bool active;                                // 사용 중인지 여부
+    bool lifeUp;                                // 체력 회복 아이템인지 아닌지
 };
 std::vector<bullet> g_bullets;                  // bullet들을 담을 동적 전역 배열
 int my_x = 275;                                 // g_me의 x좌표 초기값 
@@ -36,9 +39,24 @@ int g_parryCool = 30;                           // 패링의 쿨타임
 int g_enemyLife = 10;                           // 적 체력
 int g_myLife = 5;                               // 내 체력
 int g_hit_timer = 0;                            // 현재 남은 피격 효과 표시 프레임 값이며 동시에 무적 판정이 되는 프레임
-int g_bullet_pattern = 3;                       // TIMER_SHOOT 안에서 case문의 조건값으로 사용할 변수
+int g_enemy_hit_timer = 0;                      // 현재 남은 적 피격 효과 표시 프레임 값
+int g_bullet_pattern = 1;                       // TIMER_SHOOT 안에서 case문의 조건값으로 사용할 변수
+int g_patternTimer = 0;                         // 패턴 변경 남은 시간
+int g_patternInterval = 180;                    // 180프레임마다 변경
+int g_slowZoneWarningTimer = 0;                 // 슬로우 장판 예고 효과 유지 프레임을 담을 변수 실제 값은 SpawnSlowZone()에서 초기화하면서 넣음
+int g_slowZoneDurationTimer = 0;                // 슬로우 장판 현재 남은 지속 프레임 담을 변수 
+int g_WallDurationTimer = 0;                    // 슬로우 장판 지속 시간
+int g_WallWarningTimer = 0;                     // 슬로우 장판 예고 효과 유지 프레임을 담을 변수
+int g_WallTimer = 0;                            // 벽의 현재 남은 남은 지속 프레임을 담을 변수
 bool g_parry = 0;                               // 패링 on off 플래그 변수 이게 TRUE일때만 g_bullets.b와 g_parrying의 겹침 여부를 계산
 bool g_hit_effect = false;                      // 피격 효과 on off 플래그 변수
+bool g_enemy_hit_effect = false;                // 적 피격 효과 on off 플래그 변수
+bool g_slowZoneWarning = false;                 // 슬로우 장판 예고 플래그 변수
+bool g_slowZoneActive = false;                  // 슬로우 장판 발동 플래그 변수
+bool g_WallWarning = false;                     // 벽 예고 플래그 변수
+bool g_WallActive = false;                      // 이동 범위 제한하는 벽 발동 플래그 변수
+bool g_used = false;                            // 패턴 한번 당 아이템이 한번씩만 나오도록 하기 위해 선언한 플래그 변수
+
 
 
 // 이 코드 모듈에 포함된 함수의 선언을 전달합니다:
@@ -127,8 +145,12 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 {
    hInst = hInstance; // 인스턴스 핸들을 전역 변수에 저장합니다.
 
-   HWND hWnd = CreateWindowW(szWindowClass, szTitle, WS_OVERLAPPEDWINDOW,
-      CW_USEDEFAULT, 0, CW_USEDEFAULT, 0, nullptr, nullptr, hInstance, nullptr);
+   HWND hWnd = CreateWindowW(
+    szWindowClass, szTitle, 
+    WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,  // 창 크기 조절 막기
+    CW_USEDEFAULT, CW_USEDEFAULT,
+    700, 700,                       // 윈도우 x크기 700으로 고정
+    nullptr, nullptr, hInstance, nullptr);
 
    if (!hWnd)
    {
@@ -177,6 +199,16 @@ void UpdateRect()
         b.rc.top += b.speedY;
         b.rc.bottom += b.speedY;
 
+        //유도 패턴 추적 로직 구현
+        if (g_bullet_pattern == 4)                              
+        {
+            if (b.speedY > 0) {                                 // 이거 없으면 패링한 총알도 나의 x좌표를 따라옴
+                if (b.rc.left < my_x) b.speedX = 3;
+                else if (abs(b.rc.left-my_x)<5) b.speedX = 0;
+                else b.speedX = -3;
+            }
+        }
+
         if (b.rc.top > 800 || b.rc.bottom < 0 || b.rc.right < 0 || b.rc.left > 2000)                // 총알 화면 밖으로 나가면 비활성화 800, 2000은 일단 넣어둔 값
             b.active = false;
     }
@@ -219,11 +251,23 @@ void Hit()
         RECT hit;
         if (IntersectRect(&hit, &g_me, &b.rc))
         {
-            g_myLife--;
+            //회복 아이템일 경우
+            if (b.lifeUp)               
+            {
+                if (g_myLife < 10)     // 최대 체력 제한
+                    g_myLife++;
+
+                b.active = false;     // 아이템 제거
+                continue;             // 총알 피격 처리로 넘어가지 않게 함
+            }
+            
+
+            //일반 총알일 경우
+            g_myLife--;                     
             b.active = false;              // 총알 비활성화(삭제 처리)
 
             g_hit_effect = TRUE;           //피격 효과 on? off?
-            g_hit_timer = 15;              //피격 후 무적 지속 프레임
+            g_hit_timer = 120;             //피격 후 무적 지속 프레임
         }
     }
 
@@ -237,6 +281,9 @@ void Hit()
         {
             g_enemyLife--;
             b.active = false;              // 총알 비활성화(메모리에서 지워진건 아님!!!)
+
+            g_enemy_hit_effect = TRUE;           //피격 효과 on? off?
+            g_enemy_hit_timer = 15;              //피격 이팩트 지속시간
         }
     }
 
@@ -244,25 +291,46 @@ void Hit()
 
 }
 
-//확산 패턴
+//확산 패턴 + 회복 아이템 확률 등장
 void PatternSpread()
 
 {
     int enemyCenterX = (g_enemy.left + g_enemy.right) / 2;  // 총알의 생성 위치 설정 때문에 선언 필요
 
-    for (int i = -4; i <= 5; i += 2)   // 총 5개의 총알 생성
+    for (int i = -4; i <= 5; i += 2)                        // 총 5개의 총알 생성
     {
-        bullet b;
+        if (rand() % 10 == 0 && !g_used)            // 10% 확률로 체력 회복 아이템이 등장 but 패턴 1번당 한번만 등장하도록
+        {
+            bullet item;
 
-        // 총알 위치와 크기
-        b.rc = { enemyCenterX - 5, g_enemy.bottom,
-                 enemyCenterX + 5, g_enemy.bottom + 10 };   
+            //아이템의 위치와 크기 기본적으로 총알과 동일하나 색깔만 다를 예정
+            item.rc = { enemyCenterX - 5, g_enemy.bottom,
+                        enemyCenterX + 5, g_enemy.bottom + 10 };
 
-        b.speedX = i;               // 
-        b.speedY = 5;               // 아래로 이동
+            item.speedX = i;                                
+            item.speedY = 5;
 
-        b.active = true;
-        g_bullets.push_back(b);
+            item.active = true;
+            item.lifeUp = true;
+
+            g_bullets.push_back(item);
+            g_used = true;
+        }
+        else
+        {
+            bullet b{};
+
+            // 총알 위치와 크기
+            b.rc = { enemyCenterX - 5, g_enemy.bottom,
+                     enemyCenterX + 5, g_enemy.bottom + 10 };
+
+            b.speedX = i;               // 
+            b.speedY = 5;               // 아래로 이동
+
+            b.active = true;
+            b.lifeUp = false;
+            g_bullets.push_back(b);
+        }
     }
 }
 
@@ -271,34 +339,76 @@ void PatternStraight()
 {
     int enemyCenterX = (g_enemy.left + g_enemy.right) / 2;
 
+
+
     bullet b;
     b.rc = { enemyCenterX - 3, g_enemy.bottom,
              enemyCenterX + 3, g_enemy.bottom + 12 };
 
     b.speedX = 0;
     b.speedY = 10;
-
+    b.lifeUp = false;                       //쓰레기값 안들어가도록 초기화!
     b.active = true;
     g_bullets.push_back(b);
 }
+
 //사인 곡선 패턴 (구현하기 어렵네.....)
-void PatternSine()
+//void PatternSine()
+//{
+//    int enemyCenterX = (g_enemy.left + g_enemy.right) / 2;
+//
+//    for (int i = -3; i <= 3; i += 2)
+//    {
+//       bullet b;
+//       b.rc = { enemyCenterX - 4, g_enemy.bottom,
+//                enemyCenterX + 4, g_enemy.bottom + 8 };
+//
+//        b.speedX = i;       // 좌우로
+//        b.speedY = 6;       // 기본 하강 속도
+//
+//       b.active = true;
+//        g_bullets.push_back(b);
+//      }
+//}
+
+//유도 패턴
+void PatternHoming()
 {
-    //int enemyCenterX = (g_enemy.left + g_enemy.right) / 2;
+    int enemyCenterX = (g_enemy.left + g_enemy.right) / 2;
 
-    //for (int i = -3; i <= 3; i += 2)
-    //{
-    //    bullet b;
-    //    b.rc = { enemyCenterX - 4, g_enemy.bottom,
-    //             enemyCenterX + 4, g_enemy.bottom + 8 };
+    bullet b;
+    b.rc = { enemyCenterX - 5, g_enemy.bottom,
+             enemyCenterX + 5, g_enemy.bottom + 10 };
 
-    //    b.speedX = i;       // 좌우로
-    //    b.speedY = 6;       // 기본 하강 속도
-
-    //    b.active = true;
-    //    g_bullets.push_back(b);
-    }
+    b.speedX = 0;
+    b.speedY = 5;
+    b.lifeUp = false;                       //쓰레기값 안들어가도록 초기화!
+    b.active = true;
+    g_bullets.push_back(b);
 }
+
+//슬로우 장판
+void SpawnSlowZone(int left, int top, int right, int bottom)
+{
+    g_slowZone = {left, top, right, bottom };
+
+    g_slowZoneWarning = true;
+    g_slowZoneActive = false;
+    g_slowZoneWarningTimer = 150;                   // 슬로우 장판 예고 지속시간
+    g_slowZoneDurationTimer = 120;                  // 함수 호출 시 슬로우 장판 시속시간 초기화
+}
+
+//이동 범위를 제한하는 벽
+void SpawnWall(int left, int top, int right, int bottom)
+{
+    g_Wall = { left, top, right, bottom };
+
+    g_WallWarning = true;
+    g_WallActive = false;
+    g_WallWarningTimer = 150;                       // 벽 예고 지속 (1초)
+    g_WallDurationTimer = 180;                      // 활성화 지속시간
+}
+
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
@@ -307,7 +417,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     
     case WM_CREATE:
         {
-        SetTimer(hWnd, TIMER_UPDATE, 16, NULL);  // 지속적인 화면 그리기를 위한 타이머 1, 다시 그리기는 이걸로만
+        srand((unsigned)time(NULL)); //랜덤 시드 초기화
+
+        SetTimer(hWnd, TIMER_UPDATE, 16, NULL);  // 지속적인 화면 그리기를 위한 타이머 1, 1초에 약 60프레임
         SetTimer(hWnd, TIMER_SHOOT, 700, NULL);  // 적 공격을 위한 타이머 2, 700은 임시적인 값입니다.
 
         // 적 위치와 크기 설정
@@ -388,13 +500,61 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             SHORT right = GetAsyncKeyState(VK_RIGHT);
 
             g_move = 0;         //g_move 초기화..;
-
+            int speed = 7;
             if (left & 0x8000)  g_move -= 1;
             if (right & 0x8000) g_move += 1;
+            
+            //슬로우 장판 처리
+            if (g_slowZoneActive)                                       //슬로우 장판이 활성화 상태이면
+            {
+                g_slowZoneDurationTimer--;                              //슬로우 장판 남은 프레임 지속적으로 감소
 
-            my_x += g_move * 7;    // g_me의 좌표를 변경
+                if (g_slowZoneDurationTimer <= 0)                       //남은 프레임 0 되면 비활성화
+                {
+                    g_slowZoneActive = false;
+                }
+                RECT overlap;
+                if (IntersectRect(&overlap, &g_me, &g_slowZone))        //슬로우 장판과 me가 겹침 상태이면 속도 3으로 감소
+                    speed = 3;
+            }
+
+            // 벽 처리
+            if (g_WallActive)
+            {
+                g_WallTimer--;
+
+                if (g_WallTimer <= 0)
+                {
+                    g_WallActive = false;
+                }
+                RECT block;
+                if (IntersectRect(&block, &g_me, &g_Wall))
+                {
+                    if (g_hit_timer == 0)
+                    {
+                    g_myLife--;
+                    g_hit_effect = true;
+                    g_hit_timer = 120;
+                    }
+
+                    // 왼쪽에서 벽과 충돌한 경우
+                    if (g_me.right > g_Wall.left && g_me.left < g_Wall.left)
+                    {
+                        my_x = g_Wall.left - 50;                                //50 : 내 캐릭터 x길이
+                    }
+                    // 오른쪽에서 벽과 충돌한 경우
+                    else if (g_me.left < g_Wall.right && g_me.right > g_Wall.right)
+                    {
+                        my_x = g_Wall.right;
+                    }
+
+                    // 겹침 해소 후 RECT 갱신
+                    UpdateRect();
+                }
+            }
 
 
+            my_x += g_move * speed;    // g_me의 좌표를 변경
 
             if (g_parry_timer > 0)
             {
@@ -414,12 +574,64 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             Hit();                  //피격
             Parrying();             //패링
 
+            // 슬로우 장판 예고
+            if (g_slowZoneWarning)
+            {
+                g_slowZoneWarningTimer--;
+
+                if (g_slowZoneWarningTimer <= 0)
+                {
+                    g_slowZoneWarning = false;
+                    g_slowZoneActive = true;
+
+                    g_slowZoneDurationTimer = 120;
+                }
+            }
+
+            // 벽 예고 처리
+            if (g_WallWarning)
+            {
+                g_WallWarningTimer--;
+
+                if (g_WallWarningTimer <= 0)
+                {
+                    g_WallWarning = false;
+                    g_WallActive = true;       
+
+                    g_WallTimer = g_WallDurationTimer;   
+                }
+            }
+
+            // 패턴 변경 
+            g_patternTimer--;
+            if (g_patternTimer <= 0)
+            {
+                g_bullet_pattern++;  
+                if (g_bullet_pattern > 5) // 패턴 1~5 순환 패턴 추가시 이부분은 따로 수정 필요!!
+                    g_bullet_pattern = 1;
+
+                g_patternTimer = g_patternInterval; // 다시 초기화
+
+                if (g_bullet_pattern == 1) 
+                {
+                    g_used = false;                 //아이템 여러개 안나오도록 하기 위함
+                }
+            }
+
             // 피격 이팩트의 남은 프레임을 프레임 하나 업데이트 될 때마다 하나씩 줄임
             if (g_hit_effect)
             {
                 g_hit_timer--;              //WM_PAINT에서 blinking이라는 불타입 변수의 값을 결정하기도 함
                 if (g_hit_timer <= 0)       //피격 효과 지속시간 종료되면 g_git_effect false로
                     g_hit_effect = FALSE;
+            }
+
+            //적 피격 이펙트 구조는 위와 동일
+            if (g_enemy_hit_effect)
+            {
+                g_enemy_hit_timer--;
+                if (g_enemy_hit_timer <= 0)
+                    g_enemy_hit_effect = false;
             }
 
             //체력 0 되면 게임 종료
@@ -462,33 +674,59 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
                 case 3:
                 {
-                    PatternSine();
+                    /*PatternSine();*/
+                    if (!g_WallWarning && !g_WallActive)            // 장판 예고가 활성화 or 장판이 활성화 되어있으면 패스
+                    {
+                        int left = rand() % 600 + 50;               // 벽 위치 X (화면 내 랜덤)
+                        int top = g_me.top - 50;                    // 벽 Y 위치 (원하면 조절)
+                        int right = left + 50;                            // 벽 가로 길이
+                        int bottom = g_me.bottom + 50;              // 벽 높이
+
+                        SpawnWall(left, top, right, bottom);
+                    }
                 }
                     break;
 
                 case 4:
                 {
-
+                    PatternHoming();
                 }
                     break;
+
+                case 5:
+                {
+                    if (!g_slowZoneWarning && !g_slowZoneActive)            // 장판 예고가 활성화 or 장판이 활성화 되어있으면 패스
+                    {
+                        int screenMin = 0;                                  //장판 생성 x좌표 최소 값 
+                        int screenMax = 700;                                //장판 생성 x좌표 최대 값 
+
+                        
+                        int left = rand() % (screenMax - 200);
+                        int right = left + 200;
+
+                        SpawnSlowZone(left, g_me.top, right, g_me.bottom);
+                    }
+                }
+                break;
                 default:
                     break;
             }
+            
+            //기본 공격 패턴
+            /* b;
+
+            // 총알 시작 위치 = 적의 중앙
+            int enemyCenterX = (g_enemy.left + g_enemy.right) / 2;
+
+            b.rc = { enemyCenterX - 5, g_enemy.bottom, enemyCenterX + 5, g_enemy.bottom + 10 };
+            b.speedY = 5;     // 총알의 아래로 이동하는 속도
+            b.active = true;
+
+            g_bullets.push_back(b);
+            */
         }
 
-        //if (wParam == TIMER_SHOOT) // 적 총알 발사 타이머
-        //{
-        //    bullet b;                         //
-
-        //    // 총알 시작 위치 = 적의 중앙
-        //    int enemyCenterX = (g_enemy.left + g_enemy.right) / 2;
-
-        //    b.rc = { enemyCenterX - 5, g_enemy.bottom, enemyCenterX + 5, g_enemy.bottom + 10 };
-        //    b.speedY = 5;     // 총알의 아래로 이동하는 속도
-        //    b.active = true;
-
-        //    g_bullets.push_back(b);
-        //}
+        
     }
         break;
     case WM_PAINT:
@@ -497,10 +735,54 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             HDC hdc = BeginPaint(hWnd, &ps);
             // TODO: 여기에 hdc를 사용하는 그리기 코드를 추가합니다...
 
+            // 슬로우 장판 예고 그리기
+            if (g_slowZoneWarning)
+            {
+                HPEN warnPen = CreatePen(PS_DOT, 2, RGB(60, 60, 255));
+                HPEN oldPen = (HPEN)SelectObject(hdc, warnPen);
+
+                Rectangle(hdc, g_slowZone.left, g_slowZone.top, g_slowZone.right, g_slowZone.bottom);
+
+                SelectObject(hdc, oldPen);
+                DeleteObject(warnPen);
+            }
+
+            // 활성화 된 슬로우 장판 그리기
+            if (g_slowZoneActive)
+            {
+                HBRUSH brush = CreateSolidBrush(RGB(100, 100, 255)); // 파란 장판
+                FillRect(hdc, &g_slowZone, brush);
+                DeleteObject(brush);
+            }
+
             HPEN hPenNormal = CreatePen(PS_SOLID, 2, RGB(0, 0, 0));
             HPEN hPenHit = CreatePen(PS_SOLID, 3, RGB(255, 0, 0));
+            HPEN hEnemyPenNormal = CreatePen(PS_SOLID, 2, RGB(0, 0, 0));
+            HPEN hEnemyPenHit = CreatePen(PS_SOLID, 3, RGB(255, 0, 0));
 
             HPEN hOldPen = nullptr;
+            HPEN oldEnemyPen = nullptr;
+
+            // 벽 예고 (점선)
+            if (g_WallWarning)
+            {
+                HPEN warnPen = CreatePen(PS_DOT, 2, RGB(255, 80, 80));
+                HPEN oldPen = (HPEN)SelectObject(hdc, warnPen);
+
+                Rectangle(hdc, g_Wall.left, g_Wall.top, g_Wall.right, g_Wall.bottom);
+
+                SelectObject(hdc, oldPen);
+                DeleteObject(warnPen);
+            }
+
+            // 벽 활성화 (채움)
+            if (g_WallActive)
+            {
+                HBRUSH wb = CreateSolidBrush(RGB(255, 80, 80));
+                FillRect(hdc, &g_Wall, wb);
+                DeleteObject(wb);
+            }
+
 
             // 깜빡임 효과: 2프레임 보이고 2프레임 숨김
             bool blinking = (g_hit_effect && (g_hit_timer % 4 < 2));    //g_hit_timer : 현재 남은 피격 효과의 프레임 피격되면 15로 되었다 매 프레임마다 1씩 감소
@@ -511,25 +793,55 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 hOldPen = (HPEN)SelectObject(hdc, hPenNormal);
 
             // 테두리만 그리기
-            Rectangle(hdc, g_me.left, g_me.top, g_me.right, g_me.bottom);
-
+            Rectangle(hdc, g_me.left, g_me.top, g_me.right, g_me.bottom);\
+            
             // 원래 펜 복구
             SelectObject(hdc, hOldPen);
             DeleteObject(hPenNormal);
             DeleteObject(hPenHit);
 
+            // 적 깜빡임 효과
+            bool enemyBlink = (g_enemy_hit_effect && (g_enemy_hit_timer % 4 < 2));
+
+            if (enemyBlink)
+                oldEnemyPen = (HPEN)SelectObject(hdc, hEnemyPenHit);
+            else
+                oldEnemyPen = (HPEN)SelectObject(hdc, hEnemyPenNormal);
+
+            // 테두리만 그리기
+            
             Rectangle(hdc, g_enemy.left, g_enemy.top, g_enemy.right, g_enemy.bottom);
+
+            // 원래 펜 복구
+            SelectObject(hdc, oldEnemyPen);
+            DeleteObject(hEnemyPenNormal);
+            DeleteObject(hEnemyPenHit);
+
+
+            // 총알(또는 아이템) 그리기
             for (auto& b : g_bullets)
             {
                 if (!b.active) continue;
-                Rectangle(hdc, b.rc.left, b.rc.top, b.rc.right, b.rc.bottom);
+
+                if (b.lifeUp)   //회복 아이템
+                {
+                    
+                    HBRUSH itemBrush = CreateSolidBrush(RGB(255, 255, 0));
+                    FillRect(hdc, &b.rc, itemBrush);
+                    DeleteObject(itemBrush);
+                }
+                else
+                {
+                    Rectangle(hdc, b.rc.left, b.rc.top, b.rc.right, b.rc.bottom);
+                }
             }
+
+            //패링 그리기
             if (g_parry) {
                 Rectangle(hdc, g_parrying.left, g_parrying.top, g_parrying.right, g_parrying.bottom);
             }
 
             /// 내 체력 표시
-
             wchar_t buffer[32];                             
             swprintf(buffer, 32, L"HP: %d", g_myLife);
 
@@ -541,7 +853,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
             TextOutW(hdc, 10, 0, enemyBuffer, lstrlenW(enemyBuffer));
 
-            // 패링 쿨타임 표시
+            // 패링 쿨타임 시각화
             if (g_parryCoolTime > 0)
             {
                 float ratio = 1.0f - (float)g_parryCoolTime / g_parryCool;  // 0~1 사이
@@ -603,9 +915,4 @@ INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 }
 
 /// 해야할 것들
-/// 0.총알 패턴 여러가지로 구현
-/// 4.적 공격 패턴 다양화
-/// 5.적 스킬 만들기(슬로우 장판, 이동방해 벽 등등)
-/// 6.나에게 도움이 되는 아이템 만들기(체력 회복, 공격력 증가, 이동속도 증가, 패링 판정 강화)
-/// 7.유도탄 구현 ( g_me의 x값과 가까워지려는 이동만 추가하면 될 듯, 색깔이 다른 총알로 구현)
-/// 8.
+/// 사인파동 공격 패턴 만들기
