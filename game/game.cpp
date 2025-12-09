@@ -13,14 +13,21 @@
 HINSTANCE hInst;                                // 현재 인스턴스입니다.
 WCHAR szTitle[MAX_LOADSTRING];                  // 제목 표시줄 텍스트입니다.
 WCHAR szWindowClass[MAX_LOADSTRING];            // 기본 창 클래스 이름입니다.
+
+HDC g_hMemDC = NULL;                            // 더블 버퍼링용 HDC, g_hMemBitmap를 담는데 사용
+HBITMAP g_hMemBitmap = NULL;                    // 화면 데이터를 저장하는 객체
+HBITMAP g_hOldBitmap = NULL;                    // 화면 데이터를 저장하는 객체
+
 const UINT_PTR TIMER_UPDATE = 1;                // 화면 갱신 및 이동 처리 타이머
 const UINT_PTR TIMER_SHOOT = 2;                 // 총알 발사 타이머
+const UINT_PTR TIMER_SKILL = 3;                 // 적 스킬 타이머
 
 RECT g_enemy;                                   //적
 RECT g_me;                                      //나
 RECT g_parrying;                                //패링 영역
 RECT g_slowZone;                                //슬로우 장판
 RECT g_Wall;                                    // 적 스킬 벽
+
 struct bullet                                   //총알 구조체
 {
     RECT rc;                                    // 총알의 위치와 크기(Rect)
@@ -29,7 +36,9 @@ struct bullet                                   //총알 구조체
     bool active;                                // 사용 중인지 여부
     bool lifeUp;                                // 체력 회복 아이템인지 아닌지
 };
+
 std::vector<bullet> g_bullets;                  // bullet들을 담을 동적 전역 배열
+
 int my_x = 275;                                 // g_me의 x좌표 초기값 
 int my_y = 500;                                 // g_me의 y좌표 초기값 상하 이동은 구현 안했기 때문에 바뀔 일은 없을듯하네요
 int g_move = 0;                                 // g_me의 이동속도
@@ -40,7 +49,7 @@ int g_enemyLife = 10;                           // 적 체력
 int g_myLife = 5;                               // 내 체력
 int g_hit_timer = 0;                            // 현재 남은 피격 효과 표시 프레임 값이며 동시에 무적 판정이 되는 프레임
 int g_enemy_hit_timer = 0;                      // 현재 남은 적 피격 효과 표시 프레임 값
-int g_bullet_pattern = 1;                       // TIMER_SHOOT 안에서 case문의 조건값으로 사용할 변수
+int g_bullet_pattern = 1;                       // TIMER_SHOOT 안에서 case문의 조건값으로 사용할 변
 int g_patternTimer = 0;                         // 패턴 변경 남은 시간
 int g_patternInterval = 180;                    // 180프레임마다 변경
 int g_slowZoneWarningTimer = 0;                 // 슬로우 장판 예고 효과 유지 프레임을 담을 변수 실제 값은 SpawnSlowZone()에서 초기화하면서 넣음
@@ -48,6 +57,7 @@ int g_slowZoneDurationTimer = 0;                // 슬로우 장판 현재 남�
 int g_WallDurationTimer = 0;                    // 슬로우 장판 지속 시간
 int g_WallWarningTimer = 0;                     // 슬로우 장판 예고 효과 유지 프레임을 담을 변수
 int g_WallTimer = 0;                            // 벽의 현재 남은 남은 지속 프레임을 담을 변수
+
 bool g_parry = 0;                               // 패링 on off 플래그 변수 이게 TRUE일때만 g_bullets.b와 g_parrying의 겹침 여부를 계산
 bool g_hit_effect = false;                      // 피격 효과 on off 플래그 변수
 bool g_enemy_hit_effect = false;                // 적 피격 효과 on off 플래그 변수
@@ -149,7 +159,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
     szWindowClass, szTitle, 
     WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,  // 창 크기 조절 막기
     CW_USEDEFAULT, CW_USEDEFAULT,
-    700, 700,                       // 윈도우 x크기 700으로 고정
+    700, 700,                       // 윈도우 x,y크기 700으로 고정
     nullptr, nullptr, hInstance, nullptr);
 
    if (!hWnd)
@@ -420,7 +430,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         srand((unsigned)time(NULL)); //랜덤 시드 초기화
 
         SetTimer(hWnd, TIMER_UPDATE, 16, NULL);  // 지속적인 화면 그리기를 위한 타이머 1, 1초에 약 60프레임
-        SetTimer(hWnd, TIMER_SHOOT, 700, NULL);  // 적 공격을 위한 타이머 2, 700은 임시적인 값입니다.
+        SetTimer(hWnd, TIMER_SHOOT, 700, NULL);  // 적 공격을 위한 타이머 2, 0.7초
+        SetTimer(hWnd, TIMER_SKILL, 2000, NULL); // 적 스킬을 위한 타이머 3, 2초마다 호출
 
         // 적 위치와 크기 설정
         g_enemy.left = 300;
@@ -607,7 +618,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             if (g_patternTimer <= 0)
             {
                 g_bullet_pattern++;  
-                if (g_bullet_pattern > 5) // 패턴 1~5 순환 패턴 추가시 이부분은 따로 수정 필요!!
+                if (g_bullet_pattern > 3) // 패턴 1~5 순환 패턴 추가시 이부분은 따로 수정 필요!!
                     g_bullet_pattern = 1;
 
                 g_patternTimer = g_patternInterval; // 다시 초기화
@@ -640,7 +651,16 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 KillTimer(hWnd, TIMER_UPDATE);
                 KillTimer(hWnd, TIMER_SHOOT);
 
-                MessageBox(hWnd, L"게임 종료!", L"Game Over", MB_OK);
+                MessageBox(hWnd, L"게임 오버!", L"Game Over", MB_OK);
+                DestroyWindow(hWnd);
+            }
+            // 적 체력 0 되면 게임 종료
+            if (g_enemyLife == 0)
+            {
+                KillTimer(hWnd, TIMER_UPDATE);
+                KillTimer(hWnd, TIMER_SHOOT);
+
+                MessageBox(hWnd, L"게임 승리!", L"Game Win", MB_OK);
                 DestroyWindow(hWnd);
             }
 
@@ -651,7 +671,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 g_bullets.end()
             );
 
-            InvalidateRect(hWnd, NULL, TRUE); // 위 갱신된 rect들을 전부 다시 그림
+            InvalidateRect(hWnd, NULL, FALSE); // 위 갱신된 rect들을 전부 다시 그림
         }
 
         if (wParam == TIMER_SHOOT) // 적 총알 발사 타이머
@@ -672,42 +692,19 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 }
                     break;
 
+
                 case 3:
-                {
-                    /*PatternSine();*/
-                    if (!g_WallWarning && !g_WallActive)            // 장판 예고가 활성화 or 장판이 활성화 되어있으면 패스
-                    {
-                        int left = rand() % 600 + 50;               // 벽 위치 X (화면 내 랜덤)
-                        int top = g_me.top - 50;                    // 벽 Y 위치 (원하면 조절)
-                        int right = left + 50;                            // 벽 가로 길이
-                        int bottom = g_me.bottom + 50;              // 벽 높이
-
-                        SpawnWall(left, top, right, bottom);
-                    }
-                }
-                    break;
-
-                case 4:
                 {
                     PatternHoming();
                 }
                     break;
+                //case 4:
+                //{
+                //    /*PatternSine();*/
+                //    
+                //}
+                //    break;
 
-                case 5:
-                {
-                    if (!g_slowZoneWarning && !g_slowZoneActive)            // 장판 예고가 활성화 or 장판이 활성화 되어있으면 패스
-                    {
-                        int screenMin = 0;                                  //장판 생성 x좌표 최소 값 
-                        int screenMax = 700;                                //장판 생성 x좌표 최대 값 
-
-                        
-                        int left = rand() % (screenMax - 200);
-                        int right = left + 200;
-
-                        SpawnSlowZone(left, g_me.top, right, g_me.bottom);
-                    }
-                }
-                break;
                 default:
                     break;
             }
@@ -726,6 +723,40 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             */
         }
 
+        // 적 스킬 타이머
+        if (wParam == TIMER_SKILL)
+        {
+            int skill = rand() % 2;  // 0 = 벽, 1 = 장판
+
+            if (skill == 0)
+            {
+                if (!g_WallWarning && !g_WallActive)            // 장판 예고가 활성화 or 장판이 활성화 되어있으면 패스
+                {
+                    int left = rand() % 600 + 50;               // 벽 위치 X (화면 내 랜덤)
+                    int top = g_me.top - 50;                    // 벽 Y 위치 (원하면 조절)
+                    int right = left + 50;                            // 벽 가로 길이
+                    int bottom = g_me.bottom + 50;              // 벽 높이
+
+                    SpawnWall(left, top, right, bottom);
+                }
+            }
+            else
+            {
+                if (!g_slowZoneWarning && !g_slowZoneActive)            // 장판 예고가 활성화 or 장판이 활성화 되어있으면 패스
+                {
+                    int screenMin = 0;                                  //장판 생성 x좌표 최소 값 
+                    int screenMax = 700;                                //장판 생성 x좌표 최대 값 
+
+
+                    int left = rand() % (screenMax - 200);
+                    int right = left + 200;
+
+                    SpawnSlowZone(left, g_me.top, right, g_me.bottom);
+                }
+            }
+        }
+
+
         
     }
         break;
@@ -735,15 +766,29 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             HDC hdc = BeginPaint(hWnd, &ps);
             // TODO: 여기에 hdc를 사용하는 그리기 코드를 추가합니다...
 
+            //백버퍼 생성
+            if(g_hMemDC == NULL)
+            {
+                g_hMemDC = CreateCompatibleDC(hdc);
+                g_hMemBitmap = CreateCompatibleBitmap(hdc, 700, 700);
+                g_hOldBitmap = (HBITMAP)SelectObject(g_hMemDC, g_hMemBitmap);
+            }
+
+            //백버퍼 초기화
+            HBRUSH backBrush = CreateSolidBrush(RGB(255, 255, 255));
+            RECT backRect = { 0, 0, 700, 700};
+            FillRect(g_hMemDC, &backRect, backBrush);
+
+            DeleteObject(backBrush);
             // 슬로우 장판 예고 그리기
             if (g_slowZoneWarning)
             {
                 HPEN warnPen = CreatePen(PS_DOT, 2, RGB(60, 60, 255));
-                HPEN oldPen = (HPEN)SelectObject(hdc, warnPen);
+                HPEN oldPen = (HPEN)SelectObject(g_hMemDC, warnPen);
 
-                Rectangle(hdc, g_slowZone.left, g_slowZone.top, g_slowZone.right, g_slowZone.bottom);
+                Rectangle(g_hMemDC, g_slowZone.left, g_slowZone.top, g_slowZone.right, g_slowZone.bottom);
 
-                SelectObject(hdc, oldPen);
+                SelectObject(g_hMemDC, oldPen);
                 DeleteObject(warnPen);
             }
 
@@ -751,7 +796,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             if (g_slowZoneActive)
             {
                 HBRUSH brush = CreateSolidBrush(RGB(100, 100, 255)); // 파란 장판
-                FillRect(hdc, &g_slowZone, brush);
+                FillRect(g_hMemDC, &g_slowZone, brush);
                 DeleteObject(brush);
             }
 
@@ -767,11 +812,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             if (g_WallWarning)
             {
                 HPEN warnPen = CreatePen(PS_DOT, 2, RGB(255, 80, 80));
-                HPEN oldPen = (HPEN)SelectObject(hdc, warnPen);
+                HPEN oldPen = (HPEN)SelectObject(g_hMemDC, warnPen);
 
-                Rectangle(hdc, g_Wall.left, g_Wall.top, g_Wall.right, g_Wall.bottom);
+                Rectangle(g_hMemDC, g_Wall.left, g_Wall.top, g_Wall.right, g_Wall.bottom);
 
-                SelectObject(hdc, oldPen);
+                SelectObject(g_hMemDC, oldPen);
                 DeleteObject(warnPen);
             }
 
@@ -779,7 +824,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             if (g_WallActive)
             {
                 HBRUSH wb = CreateSolidBrush(RGB(255, 80, 80));
-                FillRect(hdc, &g_Wall, wb);
+                FillRect(g_hMemDC, &g_Wall, wb);
                 DeleteObject(wb);
             }
 
@@ -788,15 +833,15 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             bool blinking = (g_hit_effect && (g_hit_timer % 4 < 2));    //g_hit_timer : 현재 남은 피격 효과의 프레임 피격되면 15로 되었다 매 프레임마다 1씩 감소
 
             if (blinking)
-                hOldPen = (HPEN)SelectObject(hdc, hPenHit);
+                hOldPen = (HPEN)SelectObject(g_hMemDC, hPenHit);
             else
-                hOldPen = (HPEN)SelectObject(hdc, hPenNormal);
+                hOldPen = (HPEN)SelectObject(g_hMemDC, hPenNormal);
 
             // 테두리만 그리기
-            Rectangle(hdc, g_me.left, g_me.top, g_me.right, g_me.bottom);\
+            Rectangle(g_hMemDC, g_me.left, g_me.top, g_me.right, g_me.bottom);\
             
             // 원래 펜 복구
-            SelectObject(hdc, hOldPen);
+            SelectObject(g_hMemDC, hOldPen);
             DeleteObject(hPenNormal);
             DeleteObject(hPenHit);
 
@@ -804,16 +849,16 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             bool enemyBlink = (g_enemy_hit_effect && (g_enemy_hit_timer % 4 < 2));
 
             if (enemyBlink)
-                oldEnemyPen = (HPEN)SelectObject(hdc, hEnemyPenHit);
+                oldEnemyPen = (HPEN)SelectObject(g_hMemDC, hEnemyPenHit);
             else
-                oldEnemyPen = (HPEN)SelectObject(hdc, hEnemyPenNormal);
+                oldEnemyPen = (HPEN)SelectObject(g_hMemDC, hEnemyPenNormal);
 
             // 테두리만 그리기
             
-            Rectangle(hdc, g_enemy.left, g_enemy.top, g_enemy.right, g_enemy.bottom);
+            Rectangle(g_hMemDC, g_enemy.left, g_enemy.top, g_enemy.right, g_enemy.bottom);
 
             // 원래 펜 복구
-            SelectObject(hdc, oldEnemyPen);
+            SelectObject(g_hMemDC, oldEnemyPen);
             DeleteObject(hEnemyPenNormal);
             DeleteObject(hEnemyPenHit);
 
@@ -827,31 +872,31 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 {
                     
                     HBRUSH itemBrush = CreateSolidBrush(RGB(255, 255, 0));
-                    FillRect(hdc, &b.rc, itemBrush);
+                    FillRect(g_hMemDC, &b.rc, itemBrush);
                     DeleteObject(itemBrush);
                 }
                 else
                 {
-                    Rectangle(hdc, b.rc.left, b.rc.top, b.rc.right, b.rc.bottom);
+                    Rectangle(g_hMemDC, b.rc.left, b.rc.top, b.rc.right, b.rc.bottom);
                 }
             }
 
             //패링 그리기
             if (g_parry) {
-                Rectangle(hdc, g_parrying.left, g_parrying.top, g_parrying.right, g_parrying.bottom);
+                Rectangle(g_hMemDC, g_parrying.left, g_parrying.top, g_parrying.right, g_parrying.bottom);
             }
 
             /// 내 체력 표시
             wchar_t buffer[32];                             
             swprintf(buffer, 32, L"HP: %d", g_myLife);
 
-            TextOutW(hdc, 10, 500, buffer, lstrlenW(buffer));
+            TextOutW(g_hMemDC, 10, 500, buffer, lstrlenW(buffer));
 
             /// 적 체력 표시
             wchar_t enemyBuffer[32];
             swprintf(enemyBuffer, 32, L"HP: %d", g_enemyLife);
 
-            TextOutW(hdc, 10, 0, enemyBuffer, lstrlenW(enemyBuffer));
+            TextOutW(g_hMemDC, 10, 0, enemyBuffer, lstrlenW(enemyBuffer));
 
             // 패링 쿨타임 시각화
             if (g_parryCoolTime > 0)
@@ -869,10 +914,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 };
 
                 HBRUSH brush = CreateSolidBrush(RGB(0, 0, 0));
-                FillRect(hdc, &gauge, brush);
+                FillRect(g_hMemDC, &gauge, brush);
                 DeleteObject(brush);
             }
-
+            //백버퍼에 있는 화면 출력
+            BitBlt(hdc, 0, 0, 700, 700, g_hMemDC, 0, 0, SRCCOPY);
 
             /// 총알 생성 및 삭제 확인용 코드
             /*int activeCount = 0;
@@ -886,6 +932,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         }
         break;
     case WM_DESTROY:
+        if (g_hMemDC)
+        {
+            SelectObject(g_hMemDC, g_hOldBitmap);
+            DeleteObject(g_hMemBitmap);
+            DeleteDC(g_hMemDC);
+        }
         PostQuitMessage(0);
         break;
     default:
