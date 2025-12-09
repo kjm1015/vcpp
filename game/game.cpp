@@ -299,7 +299,7 @@ void PatternSpread()
 
     for (int i = -4; i <= 5; i += 2)                        // 총 5개의 총알 생성
     {
-        if (rand() % 10 == 0 && !g_used)            // 10% 확률로 체력 회복 아이템이 등장 but 패턴 1번당 한번만 등장하도록
+        if (rand() % 20 == 0 && !g_used)            // 5% 확률로 체력 회복 아이템이 등장 but 패턴 1번당 한번만 등장하도록
         {
             bullet item;
 
